@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -q
+      - run: python -m compileall -q app
+
+  docker-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t freellm:test .
+      - name: Start container
+        run: docker run -d --name freellm-test -p 8080:8080 -v freellm-test-data:/data freellm:test
+      - name: Wait for health
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8080/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs freellm-test
+          exit 1
+      - name: Verify setup page
+        run: curl -fsS http://127.0.0.1:8080/ | grep -q "FreeLLM Gateway"
+      - name: Verify persistence after restart
+        run: |
+          curl -fsS -X POST http://127.0.0.1:8080/api/setup \
+            -H 'Content-Type: application/json' \
+            -d '{"admin_password":"ci-password-123","gateway_api_key":"flm_ci_test_key_123456"}' >/tmp/setup.json
+          docker restart freellm-test
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:8080/health | grep -q '"setup":true'; then exit 0; fi
+            sleep 2
+          done
+          docker logs freellm-test
+          exit 1
+      - if: always()
+        run: docker logs freellm-test || true
