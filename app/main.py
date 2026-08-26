@@ -130,13 +130,17 @@ async def update_provider(slug: str, body: ProviderUpdate):
     provider = provider_by_slug(slug)
     if not provider:
         raise HTTPException(status_code=404, detail="Unknown provider")
+
+    existing = storage.get_provider(slug)
+    existing_creds = decrypt_json(master_key, existing.get("credentials_enc")) if existing and existing.get("credentials_enc") else {}
+    new_creds = {k: v.strip() for k, v in body.credentials.items() if v.strip()}
+    merged_creds = {**existing_creds, **new_creds}
+
     for field in provider["credential_fields"]:
-        if field.get("required") and body.enabled:
-            existing = storage.get_provider(slug)
-            existing_creds = decrypt_json(master_key, existing.get("credentials_enc")) if existing and existing.get("credentials_enc") else {}
-            if not (body.credentials.get(field["name"]) or existing_creds.get(field["name"])):
-                raise HTTPException(status_code=422, detail=f"{field['label']} is required when enabling this provider")
-    encrypted = encrypt_json(master_key, {k: v.strip() for k, v in body.credentials.items() if v.strip()}) if any(v.strip() for v in body.credentials.values()) else None
+        if field.get("required") and body.enabled and not merged_creds.get(field["name"]):
+            raise HTTPException(status_code=422, detail=f"{field['label']} is required when enabling this provider")
+
+    encrypted = encrypt_json(master_key, merged_creds) if merged_creds else None
     storage.save_provider(slug, body.enabled, body.priority, body.base_url_override, encrypted)
     return {"ok": True}
 
